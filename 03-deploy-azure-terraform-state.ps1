@@ -3,6 +3,7 @@
 # Variables
 $secretVaultName = "az-sp-vault"
 $secretName = "TerraformSP"
+$outputSecretName = "TerraformStorage"
 $terraformImage = "hashicorp/terraform:latest"
 $infraDir = "infra"
 
@@ -36,6 +37,7 @@ docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /workspace `
   -e ARM_TENANT_ID=$armTenantId `
   "$terraformImage" init
 
+# Apply the Terraform configuration
 Write-Output "Applying Terraform configuration..."
 docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /workspace `
   -e ARM_CLIENT_ID=$armClientId `
@@ -43,5 +45,26 @@ docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /workspace `
   -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
   -e ARM_TENANT_ID=$armTenantId `
   "$terraformImage" apply -auto-approve
+
+# Retrieve the Terraform outputs
+Write-Output "Retrieving Terraform outputs..."
+$terraformOutput = docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /workspace `
+  "$terraformImage" output -json | ConvertFrom-Json
+
+if ($terraformOutput) {
+    $storageAccountName = $terraformOutput.storage_account_name.value
+    $containerName = $terraformOutput.container_name.value
+
+    Write-Output "Storing storage account name and container name in SecretVault in a flat structure..."
+    Set-Secret -Vault $secretVaultName -Name "$outputSecretName" -Secret (@{
+        storage_account_name = $storageAccountName
+        container_name = $containerName
+    } | ConvertTo-Json -Depth 1)
+
+    Write-Output "Storage account name and container name successfully stored in $secretVaultName SecretVault under $outputSecretName."
+} else {
+    Write-Output "Error: Failed to retrieve Terraform outputs. Exiting."
+    exit 1
+}
 
 Write-Output "Terraform deployment complete."
