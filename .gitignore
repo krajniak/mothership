@@ -1,0 +1,29 @@
+# Ignore Terraform state files
+*.tfstate
+*.tfstate.*
+
+# Ignore Terraform provider files
+.terraform/
+.terraform.lock.hcl
+
+# Ignore sensitive files
+*.key
+*.pem
+*.pfx
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore logs
+*.log
+
+# Ignore node_modules (if applicable)
+node_modules/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore Visual Studio Code settings
+.vscode/
