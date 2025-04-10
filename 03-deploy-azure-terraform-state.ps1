@@ -3,7 +3,7 @@
 # Variables
 $secretVaultName = "az-sp-vault"
 $secretName = "TerraformSP"
-$outputSecretName = "TerraformStorage"
+$outputSecretName = "TerraformBackend"
 $terraformImage = "hashicorp/terraform:latest"
 $infraDir = "infra"
 
