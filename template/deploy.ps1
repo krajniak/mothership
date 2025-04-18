@@ -58,6 +58,43 @@ if ($backendKeyMatch) {
     exit 1
 }
 
+# Check if workspace exists or create it
+Write-Output "Selecting workspace '$Env'..."
+$workspaceSelectResult = docker run --rm -v "${PWD}:/workspace" -w /workspace `
+    -e ARM_CLIENT_ID=$armClientId `
+    -e ARM_CLIENT_SECRET=$armClientSecret `
+    -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
+    -e ARM_TENANT_ID=$armTenantId `
+    "$terraformImage" workspace select $Env
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "Workspace '$Env' does not exist. Creating new workspace..."
+    docker run --rm -v "${PWD}:/workspace" -w /workspace `
+        -e ARM_CLIENT_ID=$armClientId `
+        -e ARM_CLIENT_SECRET=$armClientSecret `
+        -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
+        -e ARM_TENANT_ID=$armTenantId `
+        "$terraformImage" workspace new $Env
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output "Error: Failed to create workspace '$Env'. Exiting."
+        exit 1
+    }
+
+    Write-Output "Selecting newly created workspace '$Env'..."
+    docker run --rm -v "${PWD}:/workspace" -w /workspace `
+        -e ARM_CLIENT_ID=$armClientId `
+        -e ARM_CLIENT_SECRET=$armClientSecret `
+        -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
+        -e ARM_TENANT_ID=$armTenantId `
+        "$terraformImage" workspace select $Env
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output "Error: Failed to select workspace '$Env'. Exiting."
+        exit 1
+    }
+}
+
 # Reinitialize Terraform backend with the -reconfigure flag
 Write-Output "Reinitializing Terraform backend..."
 docker run --rm -v "${PWD}:/workspace" -w /workspace `
@@ -75,43 +112,6 @@ if ($LASTEXITCODE -ne 0) {
     Write-Output "Error: Failed to initialize Terraform backend. Exiting."
     exit 1
 }
-
-# List workspaces
-Write-Output "Listing available Terraform workspaces..."
-docker run --rm -v "${PWD}:/workspace" -w /workspace `
-    -e ARM_CLIENT_ID=$armClientId `
-    -e ARM_CLIENT_SECRET=$armClientSecret `
-    -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
-    -e ARM_TENANT_ID=$armTenantId `
-    "$terraformImage" workspace list
-
-# Check if workspace exists or create it
-Write-Output "Checking for workspace '$Env'..."
-$workspaceExists = docker run --rm -v "${PWD}:/workspace" -w /workspace `
-    -e ARM_CLIENT_ID=$armClientId `
-    -e ARM_CLIENT_SECRET=$armClientSecret `
-    -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
-    -e ARM_TENANT_ID=$armTenantId `
-    "$terraformImage" workspace list | Select-String -Pattern "^\s*\*?\s*$Env\s*$"
-
-if (-not $workspaceExists) {
-    Write-Output "Creating new workspace '$Env'..."
-    docker run --rm -v "${PWD}:/workspace" -w /workspace `
-        -e ARM_CLIENT_ID=$armClientId `
-        -e ARM_CLIENT_SECRET=$armClientSecret `
-        -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
-        -e ARM_TENANT_ID=$armTenantId `
-        "$terraformImage" workspace new $Env
-}
-
-# Select the workspace
-Write-Output "Selecting workspace '$Env'..."
-docker run --rm -v "${PWD}:/workspace" -w /workspace `
-    -e ARM_CLIENT_ID=$armClientId `
-    -e ARM_CLIENT_SECRET=$armClientSecret `
-    -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
-    -e ARM_TENANT_ID=$armTenantId `
-    "$terraformImage" workspace select $Env
 
 # Plan the deployment
 Write-Output "Planning deployment for workspace '$Env'..."

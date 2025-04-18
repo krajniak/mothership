@@ -104,7 +104,7 @@ if ($existingSP -and $existingSP.Count -gt 0) {
 Write-Output "Creating a new service principal '$spName'..."
 $spOutput = az ad sp create-for-rbac `
     --name $spName `
-    --role Contributor `
+    --role Owner `
     --scopes "/subscriptions/$subscriptionId" | ConvertFrom-Json
 
 # Add subscriptionId as a field into spOutput

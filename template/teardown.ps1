@@ -58,29 +58,7 @@ if ($backendKeyMatch) {
     exit 1
 }
 
-# Initialize Terraform with backend configuration
-Write-Output "Initializing Terraform..."
-docker run --rm -v "${PWD}:/workspace" -w /workspace `
-    -e ARM_CLIENT_ID=$armClientId `
-    -e ARM_CLIENT_SECRET=$armClientSecret `
-    -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
-    -e ARM_TENANT_ID=$armTenantId `
-    "$terraformImage" init `
-    -backend-config="storage_account_name=$storageAccountName" `
-    -backend-config="container_name=$containerName" `
-    -backend-config="key=$backendKey" `
-    -backend-config="sas_token=$sasToken"
-
-# List workspaces
-Write-Output "Listing available Terraform workspaces..."
-docker run --rm -v "${PWD}:/workspace" -w /workspace `
-    -e ARM_CLIENT_ID=$armClientId `
-    -e ARM_CLIENT_SECRET=$armClientSecret `
-    -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
-    -e ARM_TENANT_ID=$armTenantId `
-    "$terraformImage" workspace list
-
-# Select the workspace
+# Attempt to select the workspace
 Write-Output "Selecting workspace '$Env'..."
 docker run --rm -v "${PWD}:/workspace" -w /workspace `
     -e ARM_CLIENT_ID=$armClientId `
@@ -89,22 +67,23 @@ docker run --rm -v "${PWD}:/workspace" -w /workspace `
     -e ARM_TENANT_ID=$armTenantId `
     "$terraformImage" workspace select $Env
 
-# Plan the destruction
-Write-Output "Planning destruction for workspace '$Env'..."
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "Error: Workspace '$Env' does not exist. Exiting."
+    exit 1
+}
+
+# Proceed with Terraform destroy
+Write-Output "Destroying resources for workspace '$Env'..."
 docker run --rm -v "${PWD}:/workspace" -w /workspace `
     -e ARM_CLIENT_ID=$armClientId `
     -e ARM_CLIENT_SECRET=$armClientSecret `
     -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
     -e ARM_TENANT_ID=$armTenantId `
-    "$terraformImage" plan -destroy -var-file="$varFile" -out=tfplan
+    "$terraformImage" destroy -var-file="env/$Env.tfvars" -auto-approve
 
-# Apply the destruction
-Write-Output "Applying destruction for workspace '$Env'..."
-docker run --rm -v "${PWD}:/workspace" -w /workspace `
-    -e ARM_CLIENT_ID=$armClientId `
-    -e ARM_CLIENT_SECRET=$armClientSecret `
-    -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
-    -e ARM_TENANT_ID=$armTenantId `
-    "$terraformImage" apply tfplan
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "Error: Failed to destroy resources for workspace '$Env'. Exiting."
+    exit 1
+}
 
-Write-Output "Destruction complete for workspace '$Env'."
+Write-Output "Teardown complete for workspace '$Env'."
