@@ -3,13 +3,20 @@
 # checks for an existing service principal named "terraform-sp", deletes it if found,
 # creates a new service principal, and then stores the credentials securely.
 
-# Variables
-$tenantId = "1caf5d6b-58cb-40e6-88b3-eb9ab9c0c010"
-$subscriptionId = ""
-$spName = "terraform-sp"
-$secretVaultName = "az-sp-vault"
-$secretName = "TerraformSP" # Added variable for secret name
-$obfuscatePassword = $true # Set to $true to obfuscate the password in the output
+param(
+    [string]$tenantId = "1caf5d6b-58cb-40e6-88b3-eb9ab9c0c010",
+    [string]$subscriptionId = "",
+    [string]$spName = "terraform-sp",
+    [string]$secretVaultName = "az-sp-vault",
+    [bool]$showPasswordOnConsoleOutput = $false,
+    [string]$dotEnvFile = ""
+)
+
+# Validate SecretManagement module if storing in SecretStore
+if (-not $dotEnvFile -and -not (Get-Module -ListAvailable -Name Microsoft.PowerShell.SecretManagement)) {
+    Write-Error 'Microsoft.PowerShell.SecretManagement module is required when dotEnvFile is not set. Please install it and rerun.'
+    exit 1
+}
 
 # Save the current value of core.login_experience_v2
 $currentLoginExperience = az config get core.login_experience_v2 --query "value" -o tsv
@@ -110,8 +117,8 @@ $spOutput = az ad sp create-for-rbac `
 # Add subscriptionId as a field into spOutput
 $spOutput | Add-Member -MemberType NoteProperty -Name subscription -Value $subscriptionId
 
-# Modify the output logic based on obfuscatePassword
-if ($obfuscatePassword) {
+# Modify the output logic based on showPasswordOnConsoleOutput
+if (-not $showPasswordOnConsoleOutput) {
     $spOutputCopy = $spOutput | ConvertTo-Json -Depth 10 | ConvertFrom-Json  # Create a copy of spOutput
     $spOutputCopy.password = "********"  # Obfuscate the password field
     Write-Output "New service principal created (password obfuscated):"
@@ -121,34 +128,45 @@ if ($obfuscatePassword) {
     $spOutput | Format-List
 }
 
+$envMap = @{
+    ARM_CLIENT_ID       = $spOutput.appId
+    ARM_CLIENT_SECRET   = $spOutput.password
+    ARM_SUBSCRIPTION_ID = $spOutput.subscription
+    ARM_TENANT_ID       = $spOutput.tenant
+}
+
+# Export each key/value into the current process environment
+foreach ($key in $envMap.Keys) {
+    [Environment]::SetEnvironmentVariable($key, $envMap[$key], 'Process')
+    Write-Output "Set environment variable: $key"
+}
+
 # 5. Securely store the service principal credentials for later use by Terraform.
-#    Best practice: use the PowerShell SecretManagement module (requires Microsoft.PowerShell.SecretStore as the vault backend).
-if (Get-Module -ListAvailable -Name Microsoft.PowerShell.SecretManagement) {
+if ($dotEnvFile) {
+    $envFilePath = Join-Path (Get-Location) $dotEnvFile
+    if (Test-Path $envFilePath) { Remove-Item $envFilePath }
+
+    foreach ($key in $envMap.Keys) {
+        "$key=$($envMap[$key])" | Add-Content -Path $envFilePath -Encoding utf8
+    }
+
+    Write-Output "Service principal credentials exported to .env at $envFilePath."
+} else {
     # Register a default vault if not already done
     try {
-        $defaultVault = Get-SecretVault -Name $secretVaultName -ErrorAction Stop
+        Get-SecretVault -Name $secretVaultName -ErrorAction Stop | Out-Null
     } catch {
         Write-Output "Registering a new secret vault '$secretVaultName'..."
         Register-SecretVault -Name $secretVaultName -ModuleName Microsoft.PowerShell.SecretStore -DefaultVault
     }
-    # Convert $spOutput to JSON so it becomes a string
-    $jsonSecret = $spOutput | ConvertTo-Json -Depth 10
 
-    # Store the JSON string as the secret
-    Set-Secret -Name $secretName -Secret $jsonSecret -Vault $secretVaultName
-    Write-Output "Service principal credentials stored securely in the '$secretVaultName' vault as '$secretName'."
-    Write-Output "To retrieve them later in PowerShell, run: Get-Secret -Name $secretName"
-} else {
-    # Fallback: store the credentials in a file with NTFS permissions restricting access.
-    # (This is less flexible than using the SecretManagement module.)
-    $secureFolder = "$env:USERPROFILE\.securecreds"
-    if (!(Test-Path -Path $secureFolder)) {
-        New-Item -ItemType Directory -Path $secureFolder | Out-Null
+    # Map SP output to ARM_ variables and store each as a secret
+
+    foreach ($key in $envMap.Keys) {
+        Set-Secret -Name $key -Secret $envMap[$key] -Vault $secretVaultName
+        Write-Output "Stored secret '$key' in vault '$secretVaultName'."
     }
-    $filePath = Join-Path $secureFolder "$secretName.json"
-    $spOutput | ConvertTo-Json -Depth 10 | Out-File -FilePath $filePath -Encoding utf8
-    Write-Output "Service principal credentials saved to $filePath."
-    Write-Output "Please ensure that this file is secured by NTFS permissions so that only your user account can read it."
+    Write-Output "All ARM variables stored in vault '$secretVaultName'."
 }
 
 Write-Output "Setup complete."

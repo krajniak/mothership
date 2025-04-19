@@ -1,50 +1,53 @@
-# PowerShell script to deploy Azure Terraform state using Docker and SecretVault
+# PowerShell script to deploy Azure Terraform state using Docker
+param(
+    [string]$dotEnvFile = "",
+    [string]$secretVaultName = "az-sp-vault"
+)
 
-# Variables
-$secretVaultName = "az-sp-vault"
-$secretName = "TerraformSP"
-$outputSecretName = "TerraformBackend"
 $terraformImage = "hashicorp/terraform:latest"
 $infraDir = "infra"
 
-# Check if the SecretsManagement module is installed
-if (Get-Module -ListAvailable -Name Microsoft.PowerShell.SecretManagement) {
-    # Retrieve Azure service principal credentials from SecretVault
-    Write-Output "Retrieving Azure service principal credentials from SecretVault..."
-    $spCredentials = Get-Secret -Vault $secretVaultName -Name $secretName -AsPlainText
-    if (-not $spCredentials) {
-        Write-Output "Error: Failed to retrieve service principal credentials. Exiting."
+if (-not $dotEnvFile) {
+    ./load-env-variables.ps1 -secretVaultName $secretVaultName
+    if (-not $env:ARM_CLIENT_ID -or -not $env:ARM_CLIENT_SECRET -or -not $env:ARM_TENANT_ID -or -not $env:ARM_SUBSCRIPTION_ID) {
+        Write-Error "Required environment variables are not set. Exiting."
         exit 1
     }
-
-    # Parse the plain text JSON output and extract ARM variables
-    $spCredentialsJson = $spCredentials | ConvertFrom-Json
-    $armClientId = $spCredentialsJson.appId
-    $armClientSecret = $spCredentialsJson.password
-    $armSubscriptionId = $spCredentialsJson.subscription
-    $armTenantId = $spCredentialsJson.tenant
-} else {
-    Write-Output "Error: SecretsManagement module is not installed. Exiting."
-    exit 1
 }
 
-# Pass local variables directly to the Docker container
+# Initialize Terraform
 Write-Output "Initializing Terraform..."
-docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /workspace `
-  -e ARM_CLIENT_ID=$armClientId `
-  -e ARM_CLIENT_SECRET=$armClientSecret `
-  -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
-  -e ARM_TENANT_ID=$armTenantId `
-  "$terraformImage" init
+if ($dotEnvFile) {
+    if (-not (Test-Path $dotEnvFile)) {
+        Write-Error "Env file not found: $dotEnvFile"
+        exit 1
+    }
+    docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /workspace `
+      --env-file $dotEnvFile `
+      "$terraformImage" init
+} else {
+    docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /workspace `
+      -e ARM_SUBSCRIPTION_ID=$env:ARM_SUBSCRIPTION_ID `
+      -e ARM_CLIENT_ID=$env:ARM_CLIENT_ID `
+      -e ARM_CLIENT_SECRET=$env:ARM_CLIENT_SECRET `
+      -e ARM_TENANT_ID=$env:ARM_TENANT_ID `
+      "$terraformImage" init
+}
 
-# Apply the Terraform configuration
+# Apply Terraform
 Write-Output "Applying Terraform configuration..."
-docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /workspace `
-  -e ARM_CLIENT_ID=$armClientId `
-  -e ARM_CLIENT_SECRET=$armClientSecret `
-  -e ARM_SUBSCRIPTION_ID=$armSubscriptionId `
-  -e ARM_TENANT_ID=$armTenantId `
-  "$terraformImage" apply -auto-approve
+if ($dotEnvFile) {
+    docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /workspace `
+      --env-file $dotEnvFile `
+      "$terraformImage" apply -auto-approve
+} else {
+    docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /workspace `
+      -e ARM_CLIENT_ID=$env:ARM_CLIENT_ID `
+      -e ARM_CLIENT_SECRET=$env:ARM_CLIENT_SECRET `
+      -e ARM_SUBSCRIPTION_ID=$env:ARM_SUBSCRIPTION_ID `
+      -e ARM_TENANT_ID=$env:ARM_TENANT_ID `
+      "$terraformImage" apply -auto-approve
+}
 
 # Retrieve the Terraform outputs
 Write-Output "Retrieving Terraform outputs..."
@@ -52,16 +55,23 @@ $terraformOutput = docker run --rm -v "${PWD}/$($infraDir):/workspace" -w /works
   "$terraformImage" output -json | ConvertFrom-Json
 
 if ($terraformOutput) {
-    $storageAccountName = $terraformOutput.storage_account_name.value
-    $containerName = $terraformOutput.container_name.value
+    $env:ARM_STORAGE_ACCOUNT_NAME = $terraformOutput.storage_account_name.value
+    $env:ARM_CONTAINER_NAME = $terraformOutput.container_name.value
 
-    Write-Output "Storing storage account name and container name in SecretVault in a flat structure..."
-    Set-Secret -Vault $secretVaultName -Name "$outputSecretName" -Secret (@{
-        storage_account_name = $storageAccountName
-        container_name = $containerName
-    } | ConvertTo-Json -Depth 1)
-
-    Write-Output "Storage account name and container name successfully stored in $secretVaultName SecretVault under $outputSecretName."
+    Write-Output "Backend info obtained."
+    # Save backend settings into dotEnvFile or SecretVault
+    if ($dotEnvFile) {
+        Write-Output "Appending backend variables to .env file: $dotEnvFile"
+        if (-not (Test-Path $dotEnvFile)) { Remove-Item $dotEnvFile -ErrorAction Ignore }
+        "ARM_STORAGE_ACCOUNT_NAME=$env:ARM_STORAGE_ACCOUNT_NAME" | Add-Content -Path $dotEnvFile -Encoding utf8
+        "ARM_CONTAINER_NAME=$env:ARM_CONTAINER_NAME" | Add-Content -Path $dotEnvFile -Encoding utf8
+        Write-Output "Appended ARM_STORAGE_ACCOUNT_NAME and ARM_CONTAINER_NAME to $dotEnvFile"
+    } else {
+        Write-Output "Storing backend variables in SecretVault: $secretVaultName"
+        Set-Secret -Vault $secretVaultName -Name ARM_STORAGE_ACCOUNT_NAME -Secret $env:ARM_STORAGE_ACCOUNT_NAME
+        Set-Secret -Vault $secretVaultName -Name ARM_CONTAINER_NAME -Secret $env:ARM_CONTAINER_NAME
+        Write-Output "Stored ARM_STORAGE_ACCOUNT_NAME and ARM_CONTAINER_NAME in vault '$secretVaultName'"
+    }
 } else {
     Write-Output "Error: Failed to retrieve Terraform outputs. Exiting."
     exit 1

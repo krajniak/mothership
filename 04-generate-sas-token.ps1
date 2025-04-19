@@ -1,56 +1,44 @@
 # PowerShell script to sign in, generate SAS token, and store secrets
 
-$secretVaultName = "az-sp-vault"
-$spSecretName = "TerraformSP"
-$backendSecretName = "TerraformBackend"  
+param(
+    [string]$secretVaultName     = "az-sp-vault",
+    [string]$dotEnvFile          = ""
+)
 
-# Step 1: Sign in to Azure using Service Principal credentials from Secret Vault
+# Step 1: Sign in using either .env or SecretVault
+Write-Output "Signing in to Azure using environment variables..."
+az login --service-principal -u $env:ARM_CLIENT_ID -p $env:ARM_CLIENT_SECRET --tenant $env:ARM_TENANT_ID
 
-Write-Output "Retrieving Azure service principal credentials from SecretVault..."
-$spCredentials = Get-Secret -Vault $secretVaultName -Name $spSecretName -AsPlainText
-if (-not $spCredentials) {
-    Write-Output "Error: Failed to retrieve service principal credentials. Exiting."
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Azure login failed. Exiting."
     exit 1
 }
 
-# Parse the plain text JSON output and extract ARM variables
-$spCredentialsJson = $spCredentials | ConvertFrom-Json
-$armClientId = $spCredentialsJson.appId
-$armClientSecret = $spCredentialsJson.password
-$armTenantId = $spCredentialsJson.tenant
-
-az login --service-principal -u $armClientId -p $armClientSecret --tenant $armTenantId
-
-Write-Output "Retrieving storage information from SecretVault..."
-$storeInfo = Get-Secret -Vault $secretVaultName -Name $backendSecretName -AsPlainText
-if (-not $storeInfo) {
-    Write-Output "Error: Failed to retrieve storage information. Secret '$backendSecretName' not found. Exiting."
-    exit 1
-}
-
-# Step 2: Generate SAS token for a specified storage account and container
-$storeInfoJson = $storeInfo | ConvertFrom-Json
-$storageAccountName = $storeInfoJson.storage_account_name
-$containerName = $storeInfoJson.container_name
-
+# Generate SAS token
 try {
     $sasToken = az storage container generate-sas `
-        --account-name $storageAccountName `
-        --name $containerName `
+        --account-name $env:ARM_STORAGE_ACCOUNT_NAME `
+        --name $env:ARM_CONTAINER_NAME `
         --permissions rwdl `
         --expiry 9999-12-31T23:59:59Z `
         --auth-mode key -o tsv
+    if (-not $sasToken) { throw "SAS generation failed." }
 
-    if (-not $sasToken) {
-        throw "Failed to generate SAS token. Please check the storage account and container details."
+    # Export to environment
+    $env:ARM_SAS_TOKEN = $sasToken
+
+    # Persist SAS token
+    if ($dotEnvFile) {
+        Write-Output "Appending ARM_SAS_TOKEN to .env file: $dotEnvFile"
+        "ARM_SAS_TOKEN=$sasToken" | Add-Content -Path $dotEnvFile -Encoding utf8
+        Write-Output "Appended ARM_SAS_TOKEN to $dotEnvFile"
+    } else {
+        Write-Output "Storing ARM_SAS_TOKEN in SecretVault: $secretVaultName"
+        Set-Secret -Vault $secretVaultName -Name 'ARM_SAS_TOKEN' -Secret $sasToken
+        Write-Output "Stored ARM_SAS_TOKEN in vault '$secretVaultName'"
     }
-
-    # Step 3: Update the existing TerraformStorage secret to include the SAS token
-    $updatedBackendInfo = $storeInfoJson
-    $updatedBackendInfo | Add-Member -MemberType NoteProperty -Name "sas_token" -Value $sasToken -Force
-    
-    Set-Secret -Vault $secretVaultName -Name $backendSecretName -Secret ($updatedBackendInfo | ConvertTo-Json -Depth 1)
-    Write-Host "SAS token has been added to the $backendSecretName secret in the $secretVaultName Secret Vault."
+    Write-Output "SAS token handling complete."
 } catch {
-    Write-Error "An error occurred: $_"
+    Write-Error "Error generating or storing SAS token: $_"
+    exit 1
 }
